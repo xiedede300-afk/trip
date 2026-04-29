@@ -263,12 +263,13 @@
 
                             <button
                                 onClick={() => setEditingTimeTarget({ id: loc.id, isBackup: false })}
-                                className="bg-white px-2.5 py-1 rounded-full mt-2 shadow-sm border border-slate-100 hover:border-indigo-200 transition-all hover:shadow-md active:scale-95 group/time"
+                                className="bg-white h-6 px-2 rounded-full mt-2 shadow-sm border border-slate-100 hover:border-indigo-200 transition-all hover:shadow-md active:scale-95 group/time flex items-center justify-center"
                             >
-                                <span className="text-[10px] sm:text-[11px] font-black text-slate-600 group-hover/time:text-indigo-600">
+                                <span className="text-[10px] sm:text-[11px] font-black text-slate-600 group-hover/time:text-indigo-600 leading-none">
                                     {loc.time || '--:--'}
                                 </span>
                             </button>
+
                         </div>
 
                         <div className="flex-1 bg-white rounded-3xl border border-slate-100 p-4 sm:p-6 shadow-sm hover:shadow-md transition-shadow">
@@ -723,7 +724,8 @@
                                 <label className="text-[11px] font-bold text-slate-500 mb-1.5 block">快速選擇</label>
                                 <input
                                     type="date"
-                                    className="w-full bg-indigo-50 border border-indigo-100 text-indigo-700 rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all"
+                                    className="w-full min-w-0 bg-indigo-50 border border-indigo-100 text-indigo-700 rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all box-border"
+
                                     onChange={(e) => {
                                         if (e.target.value) {
                                             const d = new Date(e.target.value);
@@ -1148,8 +1150,6 @@
                                                                 </button>
                                                                 <button 
                                                                     onClick={() => setEditingTimeTarget({ id: loc.id, isBackup: true })}
-                                                                    className="w-full bg-white px-1 py-1 rounded-full mt-2 shadow-sm border border-slate-100 hover:border-indigo-200 transition-all text-center"
-                                                                >
                                                                     <span className="text-[9px] font-black text-slate-500">
                                                                         {loc.time || '--:--'}
                                                                     </span>
