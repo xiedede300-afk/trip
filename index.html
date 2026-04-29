@@ -152,7 +152,7 @@
 
     <script type="text/babel">
         const { useState, useMemo, useEffect, useRef, useLayoutEffect } = React;
-        const { motion, Reorder } = window.Motion;
+        const { motion, Reorder, useDragControls } = window.Motion;
 
         const Icon = ({ name, className = "w-4 h-4" }) => {
             const containerRef = useRef(null);
@@ -193,6 +193,160 @@
             const [focusedLocationId, setFocusedLocationId] = useState(null);
             const [openDropdownId, setOpenDropdownId] = useState(null);
             const [openTransportId, setOpenTransportId] = useState(null);
+            const [editingDayId, setEditingDayId] = useState(null);
+
+            const LocationItem = ({
+                loc,
+                index,
+                nextLoc,
+                categories,
+                transportTypes,
+                openDropdownId,
+                openTransportId,
+                setOpenDropdownId,
+                setOpenTransportId,
+                updateLocation,
+                removeLocation,
+                setEditingTimeTarget,
+                setEditingTransportTarget,
+                getDirectionsUrl
+            }) => {
+                const dragControls = useDragControls();
+                const cat = categories.find(c => c.id === loc.category) || categories[5];
+                const currentTrans = transportTypes.find(t => t.id === loc.transportType) || transportTypes[0];
+                const isDropdownOpen = openDropdownId === loc.id;
+
+                return (
+                    <Reorder.Item
+                        key={loc.id}
+                        value={loc}
+                        dragListener={false}
+                        dragControls={dragControls}
+                        className={`group relative ${(isDropdownOpen || openTransportId === loc.id) ? 'elevated-card' : 'z-10'}`}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                    >
+                        <div className={`flex gap-4 sm:gap-6 items-start relative ${isDropdownOpen ? 'z-50' : 'z-10'}`}>
+                            <div className="flex flex-col items-center shrink-0">
+                                <div className={`relative ${isDropdownOpen ? 'z-50' : 'z-10'}`}>
+                                    <div
+                                        onPointerDown={(e) => dragControls.start(e)}
+                                        onClick={() => setOpenDropdownId(isDropdownOpen ? null : loc.id)}
+                                        className={`drag-handle w-11 h-11 sm:w-14 sm:h-14 rounded-xl sm:rounded-2xl ${cat.bg} ${cat.text} flex items-center justify-center border-2 sm:border-4 border-white shadow-sm transition-all active:scale-95 cursor-grab relative hover:brightness-95`}
+                                    >
+                                        <Icon name={cat.icon} className="w-5 h-5 sm:w-6 sm:h-6" />
+                                    </div>
+
+                                    {isDropdownOpen && (
+                                        <CategoryDropdown
+                                            currentId={loc.category}
+                                            onSelect={(val) => updateLocation(loc.id, 'category', val)}
+                                            onClose={() => setOpenDropdownId(null)}
+                                        />
+                                    )}
+                                </div>
+
+                                <button
+                                    onClick={() => setEditingTimeTarget({ id: loc.id, isBackup: false })}
+                                    className="bg-white px-2.5 py-1 rounded-full mt-2 shadow-sm border border-slate-100 hover:border-indigo-200 transition-all hover:shadow-md active:scale-95 group/time"
+                                >
+                                    <span className="text-[10px] sm:text-[11px] font-black text-slate-600 group-hover/time:text-indigo-600">
+                                        {loc.time || '--:--'}
+                                    </span>
+                                </button>
+                            </div>
+
+                            <div className="flex-1 bg-white rounded-3xl border border-slate-100 p-4 sm:p-6 shadow-sm hover:shadow-md transition-shadow">
+                                <div className="flex justify-between items-start gap-2 mb-3">
+                                    <div className="flex-1">
+                                        <input
+                                            className="text-base sm:text-lg font-black bg-transparent border-none p-0 focus:ring-0 text-slate-800 w-full mb-0.5"
+                                            value={loc.name}
+                                            placeholder="景點名稱..."
+                                            onChange={(e) => updateLocation(loc.id, 'name', e.target.value)}
+                                        />
+                                        <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-bold">
+                                            <Icon name="tag" className="w-3 h-3" />
+                                            <span>{cat.label}</span>
+                                        </div>
+                                    </div>
+                                    <button onClick={() => removeLocation(loc.id)} className="text-slate-200 hover:text-rose-500 p-1.5 transition-colors">
+                                        <Icon name="trash-2" className="w-4 h-4" />
+                                    </button>
+                                </div>
+                                <div className="space-y-2.5">
+                                    <div className="flex items-center gap-2 text-[11px] text-slate-500 bg-slate-50 rounded-xl px-3 py-2 border border-slate-100">
+                                        <Icon name="map-pin" className="w-3 h-3 text-slate-400 shrink-0" />
+                                        <input className="bg-transparent border-none p-0 focus:ring-0 w-full font-medium" value={loc.mapUrl} placeholder="Google Map 分享連結..." onChange={(e) => updateLocation(loc.id, 'mapUrl', e.target.value)} />
+                                    </div>
+                                    {loc.note !== undefined && (
+                                        <div className="flex items-start gap-2 text-[11px] text-slate-400 bg-amber-50/20 rounded-xl px-3 py-2 border border-amber-100/30">
+                                            <Icon name="sticky-note" className="w-3 h-3 text-amber-500 mt-0.5 shrink-0" />
+                                            <textarea className="bg-transparent border-none p-0 focus:ring-0 w-full resize-none font-medium" rows="1" value={loc.note} placeholder="行程備註..." onChange={(e) => updateLocation(loc.id, 'note', e.target.value)} />
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        {nextLoc && (
+                            <div className="ml-14 sm:ml-20 my-4 sm:my-6 pl-0 relative z-10 flex items-center gap-3">
+                                <div className="relative flex-1 max-w-xs">
+                                    <div className="flex items-center bg-white border border-slate-100 rounded-2xl p-1 shadow-sm">
+                                        <button
+                                            onClick={() => setOpenTransportId(openTransportId === loc.id ? null : loc.id)}
+                                            className="w-10 h-10 rounded-xl bg-slate-50 text-slate-600 flex items-center justify-center hover:bg-slate-100 transition-colors active:scale-95"
+                                        >
+                                            <Icon name={currentTrans.icon} className="w-4 h-4" />
+                                        </button>
+
+                                        <div className="flex-1 px-3 flex items-center gap-2">
+                                            <input
+                                                className="bg-transparent border-none p-0 focus:ring-0 w-full text-[11px] font-bold text-slate-500"
+                                                placeholder="交通資訊..."
+                                                value={loc.transportDetail}
+                                                onChange={(e) => updateLocation(loc.id, 'transportDetail', e.target.value)}
+                                            />
+                                            <button
+                                                onClick={() => setEditingTransportTarget({ id: loc.id })}
+                                                className="flex items-center gap-1 shrink-0 bg-indigo-50/50 px-2 py-1 rounded-lg hover:bg-indigo-100 transition-all active:scale-95"
+                                            >
+                                                <span className="text-[11px] font-black text-indigo-600">{loc.transportTime || 0}</span>
+                                                <span className="text-[9px] font-black text-indigo-300">m</span>
+                                            </button>
+                                        </div>
+
+                                        {openTransportId === loc.id && (
+                                            <div className="transport-popover animate-in">
+                                                {transportTypes.map(t => (
+                                                    <button
+                                                        key={t.id}
+                                                        onClick={() => { updateLocation(loc.id, 'transportType', t.id); setOpenTransportId(null); }}
+                                                        className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${loc.transportType === t.id ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-50'}`}
+                                                    >
+                                                        <Icon name={t.icon} className="w-4 h-4" />
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <a
+                                    href={getDirectionsUrl(loc.mapUrl, nextLoc.mapUrl, loc.transportType)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="w-12 h-12 rounded-2xl bg-indigo-500 text-white flex items-center justify-center shadow-lg shadow-indigo-100 hover:bg-indigo-600 active:scale-95 transition-all shrink-0"
+                                >
+                                    <Icon name="navigation" className="w-5 h-5" />
+                                </a>
+                            </div>
+                        )}
+                    </Reorder.Item>
+                );
+            };
+
             const [editingDayId, setEditingDayId] = useState(null);
 
             const [editingTimeTarget, setEditingTimeTarget] = useState(null); // { id, isBackup }
@@ -930,139 +1084,25 @@
                                         {currentDayData.locations.length > 0 && <div className="timeline-line"></div>}
 
                                         <Reorder.Group axis="y" values={currentDayData.locations} onReorder={handleReorder} className="space-y-8">
-                                            {currentDayData.locations.map((loc, index) => {
-                                                const cat = categories.find(c => c.id === loc.category) || categories[5];
-                                                const nextLoc = currentDayData.locations[index + 1];
-                                                const currentTrans = transportTypes.find(t => t.id === loc.transportType) || transportTypes[0];
-                                                const isDropdownOpen = openDropdownId === loc.id;
-
-                                                return (
-                                                    <Reorder.Item
-                                                        key={loc.id}
-                                                        value={loc}
-                                                        className={`group relative ${(isDropdownOpen || openTransportId === loc.id) ? 'elevated-card' : 'z-10'}`}
-                                                        initial={{ opacity: 0, y: 10 }}
-                                                        animate={{ opacity: 1, y: 0 }}
-                                                        exit={{ opacity: 0, scale: 0.95 }}
-                                                    >
-                                                        <div className={`flex gap-4 sm:gap-6 items-start relative ${isDropdownOpen ? 'z-50' : 'z-10'}`}>
-                                                            <div className="flex flex-col items-center shrink-0">
-                                                                <div className={`relative ${isDropdownOpen ? 'z-50' : 'z-10'}`}>
-                                                                    <div
-                                                                        onClick={() => setOpenDropdownId(isDropdownOpen ? null : loc.id)}
-                                                                        className={`drag-handle w-11 h-11 sm:w-14 sm:h-14 rounded-xl sm:rounded-2xl ${cat.bg} ${cat.text} flex items-center justify-center border-2 sm:border-4 border-white shadow-sm transition-all active:scale-95 cursor-grab relative hover:brightness-95`}
-                                                                    >
-                                                                        <Icon name={cat.icon} className="w-5 h-5 sm:w-6 sm:h-6" />
-                                                                    </div>
-
-                                                                    {isDropdownOpen && (
-                                                                        <CategoryDropdown
-                                                                            currentId={loc.category}
-                                                                            onSelect={(val) => updateLocation(loc.id, 'category', val)}
-                                                                            onClose={() => setOpenDropdownId(null)}
-                                                                        />
-                                                                    )}
-                                                                </div>
-
-                                                                <button 
-                                                                    onClick={() => setEditingTimeTarget({ id: loc.id, isBackup: false })}
-                                                                    className="bg-white px-2.5 py-1 rounded-full mt-2 shadow-sm border border-slate-100 hover:border-indigo-200 transition-all hover:shadow-md active:scale-95 group/time"
-                                                                >
-                                                                    <span className="text-[10px] sm:text-[11px] font-black text-slate-600 group-hover/time:text-indigo-600">
-                                                                        {loc.time || '--:--'}
-                                                                    </span>
-                                                                </button>
-                                                            </div>
-
-                                                            <div className="flex-1 bg-white rounded-3xl border border-slate-100 p-4 sm:p-6 shadow-sm hover:shadow-md transition-shadow">
-                                                                <div className="flex justify-between items-start gap-2 mb-3">
-                                                                    <div className="flex-1">
-                                                                        <input
-                                                                            className="text-base sm:text-lg font-black bg-transparent border-none p-0 focus:ring-0 text-slate-800 w-full mb-0.5"
-                                                                            value={loc.name}
-                                                                            placeholder="景點名稱..."
-                                                                            onChange={(e) => updateLocation(loc.id, 'name', e.target.value)}
-                                                                        />
-                                                                        <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-bold">
-                                                                            <Icon name="tag" className="w-3 h-3" />
-                                                                            <span>{cat.label}</span>
-                                                                        </div>
-                                                                    </div>
-                                                                    <button onClick={() => removeLocation(loc.id)} className="text-slate-200 hover:text-rose-500 p-1.5 transition-colors">
-                                                                        <Icon name="trash-2" className="w-4 h-4" />
-                                                                    </button>
-                                                                </div>
-                                                                <div className="space-y-2.5">
-                                                                    <div className="flex items-center gap-2 text-[11px] text-slate-500 bg-slate-50 rounded-xl px-3 py-2 border border-slate-100">
-                                                                        <Icon name="map-pin" className="w-3 h-3 text-slate-400 shrink-0" />
-                                                                        <input className="bg-transparent border-none p-0 focus:ring-0 w-full font-medium" value={loc.mapUrl} placeholder="Google Map 分享連結..." onChange={(e) => updateLocation(loc.id, 'mapUrl', e.target.value)} />
-                                                                    </div>
-                                                                    {loc.note !== undefined && (
-                                                                        <div className="flex items-start gap-2 text-[11px] text-slate-400 bg-amber-50/20 rounded-xl px-3 py-2 border border-amber-100/30">
-                                                                            <Icon name="sticky-note" className="w-3 h-3 text-amber-500 mt-0.5 shrink-0" />
-                                                                            <textarea className="bg-transparent border-none p-0 focus:ring-0 w-full resize-none font-medium" rows="1" value={loc.note} placeholder="行程備註..." onChange={(e) => updateLocation(loc.id, 'note', e.target.value)} />
-                                                                        </div>
-                                                                    )}
-                                                                </div>
-                                                            </div>
-                                                        </div>
-
-                                                        {nextLoc && (
-                                                            <div className="ml-14 sm:ml-20 my-4 sm:my-6 pl-0 relative z-10 flex items-center gap-3">
-                                                                <div className="relative flex-1 max-w-xs">
-                                                                    <div className="flex items-center bg-white border border-slate-100 rounded-2xl p-1 shadow-sm">
-                                                                        <button
-                                                                            onClick={() => setOpenTransportId(openTransportId === loc.id ? null : loc.id)}
-                                                                            className="w-10 h-10 rounded-xl bg-slate-50 text-slate-600 flex items-center justify-center hover:bg-slate-100 transition-colors active:scale-95"
-                                                                        >
-                                                                            <Icon name={currentTrans.icon} className="w-4 h-4" />
-                                                                        </button>
-
-                                                                        <div className="flex-1 px-3 flex items-center gap-2">
-                                                                            <input
-                                                                                className="bg-transparent border-none p-0 focus:ring-0 w-full text-[11px] font-bold text-slate-500"
-                                                                                placeholder="交通資訊..."
-                                                                                value={loc.transportDetail}
-                                                                                onChange={(e) => updateLocation(loc.id, 'transportDetail', e.target.value)}
-                                                                            />
-                                                                            <button
-                                                                                onClick={() => setEditingTransportTarget({ id: loc.id })}
-                                                                                className="flex items-center gap-1 shrink-0 bg-indigo-50/50 px-2 py-1 rounded-lg hover:bg-indigo-100 transition-all active:scale-95"
-                                                                            >
-                                                                                <span className="text-[11px] font-black text-indigo-600">{loc.transportTime || 0}</span>
-                                                                                <span className="text-[9px] font-black text-indigo-300">m</span>
-                                                                            </button>
-                                                                        </div>
-
-                                                                        {openTransportId === loc.id && (
-                                                                            <div className="transport-popover animate-in">
-                                                                                {transportTypes.map(t => (
-                                                                                    <button
-                                                                                        key={t.id}
-                                                                                        onClick={() => { updateLocation(loc.id, 'transportType', t.id); setOpenTransportId(null); }}
-                                                                                        className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${loc.transportType === t.id ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-50'}`}
-                                                                                    >
-                                                                                        <Icon name={t.icon} className="w-4 h-4" />
-                                                                                    </button>
-                                                                                ))}
-                                                                            </div>
-                                                                        )}
-                                                                    </div>
-                                                                </div>
-
-                                                                <a
-                                                                    href={getDirectionsUrl(loc.mapUrl, nextLoc.mapUrl, loc.transportType)}
-                                                                    target="_blank"
-                                                                    rel="noopener noreferrer"
-                                                                    className="w-12 h-12 rounded-2xl bg-indigo-500 text-white flex items-center justify-center shadow-lg shadow-indigo-100 hover:bg-indigo-600 active:scale-95 transition-all shrink-0"
-                                                                >
-                                                                    <Icon name="navigation" className="w-5 h-5" />
-                                                                </a>
-                                                            </div>
-                                                        )}
-                                                    </Reorder.Item>
-                                                );
-                                            })}
+                                            {currentDayData.locations.map((loc, index) => (
+                                                <LocationItem
+                                                    key={loc.id}
+                                                    loc={loc}
+                                                    index={index}
+                                                    nextLoc={currentDayData.locations[index + 1]}
+                                                    categories={categories}
+                                                    transportTypes={transportTypes}
+                                                    openDropdownId={openDropdownId}
+                                                    openTransportId={openTransportId}
+                                                    setOpenDropdownId={setOpenDropdownId}
+                                                    setOpenTransportId={setOpenTransportId}
+                                                    updateLocation={updateLocation}
+                                                    removeLocation={removeLocation}
+                                                    setEditingTimeTarget={setEditingTimeTarget}
+                                                    setEditingTransportTarget={setEditingTransportTarget}
+                                                    getDirectionsUrl={getDirectionsUrl}
+                                                />
+                                            ))}
                                         </Reorder.Group>
 
                                         <div className="mt-12 ml-14 sm:ml-20">
