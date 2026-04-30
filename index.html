@@ -18,6 +18,8 @@
     <script src="https://unpkg.com/framer-motion@10.16.4/dist/framer-motion.js"></script>
     <!-- LZ-String for URL compression -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
+    <!-- Gun.js for Real-time Collaboration -->
+    <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
 
@@ -151,7 +153,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useMemo, useEffect, useRef, useLayoutEffect } = React;
+        const { useState, useMemo, useEffect, useRef, useLayoutEffect, useCallback } = React;
         const { motion, Reorder, useDragControls } = window.Motion;
 
         const categories = [
@@ -362,9 +364,27 @@
             );
         };
 
-        const App = () => {
-            // ── 從 URL hash 讀取分享資料（必須在所有 useState 之前）──
+            // ── 共同編輯 (Gun.js) 初始化 ──
+            const gun = useMemo(() => {
+                if (!window.Gun) return null;
+                // 使用公共的 Relay Peers
+                return Gun([
+                    'https://gun-manhattan.herokuapp.com/gun',
+                    'https://peer.wall.org/gun',
+                    'https://gundb-relay.herokuapp.com/gun'
+                ]);
+            }, []);
+
+            const [roomId, setRoomId] = useState(() => {
+                const params = new URLSearchParams(window.location.search);
+                return params.get('room');
+            });
+
+            const [isSyncing, setIsSyncing] = useState(false);
+
+            // ── 從 URL hash 讀取分享資料（非協作模式使用）──
             const getSharedData = () => {
+                if (roomId) return null; // 協作模式優先從 Gun 讀取
                 const hash = window.location.hash.substring(1);
                 if (hash && window.LZString) {
                     try {
@@ -389,6 +409,72 @@
             const [editingTimeTarget, setEditingTimeTarget] = useState(null); // { id, isBackup }
             const [editingTransportTarget, setEditingTransportTarget] = useState(null); // { id }
 
+            // ── 協作模式：從雲端監聽資料 ──
+            useEffect(() => {
+                if (!gun || !roomId) return;
+
+                const room = gun.get('tripsync').get(roomId);
+                
+                room.on((data) => {
+                    if (!data) return;
+                    setIsSyncing(true);
+                    
+                    if (data.tripTitle && data.tripTitle !== tripTitle) {
+                        setTripTitle(data.tripTitle);
+                    }
+                    
+                    if (data.itinerary) {
+                        try {
+                            const remoteItinerary = JSON.parse(data.itinerary);
+                            setItinerary(prev => {
+                                // 簡單判斷：如果資料結構不同才更新
+                                if (JSON.stringify(prev) !== data.itinerary) return remoteItinerary;
+                                return prev;
+                            });
+                        } catch (e) {}
+                    }
+                    
+                    if (data.backupLocations) {
+                        try {
+                            const remoteBackup = JSON.parse(data.backupLocations);
+                            setBackupLocations(prev => {
+                                if (JSON.stringify(prev) !== data.backupLocations) return remoteBackup;
+                                return prev;
+                            });
+                        } catch (e) {}
+                    }
+                    
+                    setTimeout(() => setIsSyncing(false), 500);
+                });
+
+                return () => room.off();
+            }, [gun, roomId]);
+
+            // ── 協作模式：同步本地資料到雲端 (Debounced) ──
+            const pushToCloud = useCallback((data) => {
+                if (!gun || !roomId) return;
+                const room = gun.get('tripsync').get(roomId);
+                room.put({
+                    tripTitle: data.tripTitle,
+                    itinerary: JSON.stringify(data.itinerary),
+                    backupLocations: JSON.stringify(data.backupLocations),
+                    lastUpdate: Date.now()
+                });
+            }, [gun, roomId]);
+
+            const syncTimer = useRef(null);
+            useEffect(() => {
+                if (!roomId) return;
+                
+                // 只有在非同步中（自己修改）才推送到雲端
+                if (!isSyncing) {
+                    if (syncTimer.current) clearTimeout(syncTimer.current);
+                    syncTimer.current = setTimeout(() => {
+                        pushToCloud({ tripTitle, itinerary, backupLocations });
+                    }, 1000);
+                }
+            }, [tripTitle, itinerary, backupLocations, roomId, isSyncing, pushToCloud]);
+
             useEffect(() => {
                 const handleScroll = () => setIsScrolled(window.scrollY > 10);
                 window.addEventListener('scroll', handleScroll);
@@ -396,23 +482,54 @@
             }, []);
 
             const handleShare = () => {
+                if (roomId) {
+                    // 協作模式：分享包含 Room ID 的永久連結
+                    const baseUrl = window.location.href.split('?')[0].split('#')[0];
+                    const url = `${baseUrl}?room=${roomId}`;
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(url)
+                            .then(() => alert('✅ 共同編輯連結已複製！\n您可以將此連結傳給朋友，他們看到的將是您目前的最新內容，且修改會即時同步。'))
+                            .catch(() => { prompt('請手動複製以下連結：', url); });
+                    } else {
+                        prompt('請手動複製以下連結：', url);
+                    }
+                    return;
+                }
+
                 if (!window.LZString) {
                     alert('分享功能載入中，請稍後再試。');
                     return;
                 }
                 const data = { itinerary, backupLocations, tripTitle };
                 const compressed = window.LZString.compressToEncodedURIComponent(JSON.stringify(data));
-                // 使用當前完整 URL（去掉舊 hash）確保 file:// 與 http:// 都能正確運作
-                const baseUrl = window.location.href.split('#')[0];
+                const baseUrl = window.location.href.split('?')[0].split('#')[0];
                 const url = `${baseUrl}#${compressed}`;
                 window.history.replaceState(null, '', `#${compressed}`);
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                     navigator.clipboard.writeText(url)
-                        .then(() => alert('✅ 分享連結已複製！\n將此連結傳給朋友，他們即可開啟並共同編輯行程。'))
+                        .then(() => alert('✅ 分享連結已複製！\n目前為「靜態分享」模式，若希望多人同時編輯，請點擊下方的「開啟共同編輯」。'))
                         .catch(() => { prompt('請手動複製以下連結：', url); });
                 } else {
                     prompt('請手動複製以下連結：', url);
                 }
+            };
+
+            const enableCollaboration = () => {
+                if (roomId) return;
+                const newRoomId = 'room_' + Math.random().toString(36).substring(2, 11);
+                setRoomId(newRoomId);
+                const baseUrl = window.location.href.split('?')[0].split('#')[0];
+                window.history.pushState(null, '', `?room=${newRoomId}`);
+                // 立即推播當前資料到雲端
+                if (gun) {
+                    gun.get('tripsync').get(newRoomId).put({
+                        tripTitle,
+                        itinerary: JSON.stringify(itinerary),
+                        backupLocations: JSON.stringify(backupLocations),
+                        lastUpdate: Date.now()
+                    });
+                }
+                alert('🚀 共同編輯模式已啟動！\n網址已更新，現在點擊「分享」按鈕即可獲得共同編輯連結。');
             };
 
             const startDate = new Date();
@@ -1016,12 +1133,30 @@
                                     placeholder="旅行名稱..."
                                 />
                             </div>
-                            <button 
-                                onClick={handleShare}
-                                className="p-2 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600 rounded-xl transition-all active:scale-90"
-                            >
-                                <Icon name="share-2" className="w-5 h-5" />
-                            </button>
+                            <div className="flex items-center gap-1 sm:gap-2">
+                                {roomId && (
+                                    <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[9px] font-black uppercase tracking-wider transition-all ${isSyncing ? 'bg-indigo-100 text-indigo-600' : 'bg-emerald-50 text-emerald-600'}`}>
+                                        <div className={`w-1.5 h-1.5 rounded-full ${isSyncing ? 'bg-indigo-600 animate-pulse' : 'bg-emerald-500'}`}></div>
+                                        <span className="hidden xs:inline">{isSyncing ? '同步中' : '連線中'}</span>
+                                        <Icon name="users" className="w-3 h-3" />
+                                    </div>
+                                )}
+                                {!roomId && (
+                                    <button 
+                                        onClick={enableCollaboration} 
+                                        className="p-2 text-slate-400 hover:bg-amber-50 hover:text-amber-600 rounded-xl transition-all active:scale-90" 
+                                        title="開啟共同編輯"
+                                    >
+                                        <Icon name="users" className="w-5 h-5" />
+                                    </button>
+                                )}
+                                <button 
+                                    onClick={handleShare}
+                                    className="p-2 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600 rounded-xl transition-all active:scale-90"
+                                >
+                                    <Icon name="share-2" className="w-5 h-5" />
+                                </button>
+                            </div>
                         </div>
 
                         <div className="max-w-xl mx-auto px-4 sm:px-6 pb-4 flex items-center gap-3.5 overflow-x-auto scrollbar-hide py-2">
