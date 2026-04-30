@@ -398,20 +398,36 @@
         const App = () => {
             // ── 共同編輯 (Gun.js) 初始化 ──
             const [syncLogs, setSyncLogs] = useState(['系統初始化...']);
-            const addLog = (msg) => setSyncLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 10));
+            const addLog = (msg) => setSyncLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 15));
 
             const gun = useMemo(() => {
                 if (!window.Gun) return null;
-                const peer = 'https://gun-manhattan.herokuapp.com/gun';
+                const peers = [
+                    'https://gun-manhattan.herokuapp.com/gun',
+                    'https://relay.peer.ooo/gun',
+                    'https://gun.p2p.army/gun'
+                ];
                 const g = Gun({
-                    peers: [peer],
+                    peers: peers,
                     localStorage: true,
                     retry: 1000
                 });
 
-                // 心跳機制：防止連線被電信商切斷
+                // 監聽節點連線事件
+                g.on('hi', (peer) => addLog(`✅ 連上節點: ${peer.url || '未知'}`));
+                g.on('bye', (peer) => addLog(`❌ 斷開節點: ${peer.url || '未知'}`));
+
+                // 心跳與強制喚醒
                 setInterval(() => {
-                    if (g) g.get('heartbeat').put(Date.now());
+                    if (g) {
+                        g.get('heartbeat').put(Date.now());
+                        // 如果一個人都沒連上，嘗試重新握手
+                        const activePeers = Object.values(g.back('opt.peers') || {}).filter(p => p.wire && p.wire.readyState === 1);
+                        if (activePeers.length === 0) {
+                            addLog('📡 嘗試重新喚醒雲端連線...');
+                            g.opt({ peers: peers });
+                        }
+                    }
                 }, 10000);
 
                 return g;
@@ -587,64 +603,58 @@
                 }
             }, [itinerary, backupLocations, tripTitle, roomId]);
 
-            // ── 協作模式：同步邏輯 (原子化路徑強化版) ──
+            // ── 協作模式：同步邏輯 (穩定性增強版) ──
             useEffect(() => {
                 if (!gun || !roomId) {
                     setHasLoadedFromCloud(true);
                     return;
                 }
                 
-                const roomKey = 'ts_' + roomId;
-                addLog(`訂閱頻道: ${roomKey}`);
+                const roomKey = 'ts_v3_' + roomId; // 使用新版前綴避免舊資料干擾
+                addLog(`🔑 進入房間: ${roomKey}`);
                 const room = gun.get(roomKey);
 
                 const loadTimeout = setTimeout(() => {
                     if (!hasLoadedFromCloud) {
-                        addLog('雲端載入超時');
+                        addLog('⚠️ 雲端讀取超時 (10s)，開啟編輯權限');
                         setHasLoadedFromCloud(true);
                     }
-                }, 6000);
+                }, 10000);
 
-                // 監聽原子化節點，提高小封包成功率
                 room.on((data) => {
                     if (!data || isSyncingRef.current) return;
                     
                     const current = stateRef.current;
                     let hasChange = false;
-
-                    // 1. 標題
+                    
+                    // 資料比對
                     if (data.t && data.t !== current.tripTitle) {
                         setTripTitle(data.t);
                         hasChange = true;
-                        addLog('📥 收到標題更新');
                     }
-                    
-                    // 2. 行程 (JSON)
                     if (data.i && data.i !== JSON.stringify(minifyTripData(current.itinerary))) {
                         try {
                             setItinerary(expandTripData(JSON.parse(data.i)));
                             hasChange = true;
-                            addLog('📥 收到行程更新');
                         } catch (e) {}
                     }
-                    
-                    // 3. 備用 (JSON)
                     if (data.b && data.b !== JSON.stringify(minifyTripData(current.backupLocations))) {
                         try {
                             setBackupLocations(expandTripData(JSON.parse(data.b)));
                             hasChange = true;
-                            addLog('📥 收到備用清單更新');
                         } catch (e) {}
                     }
 
                     if (hasChange) {
+                        addLog('🔄 成功同步雲端最新變更');
+                        clearTimeout(loadTimeout);
                         setHasLoadedFromCloud(true);
                         setIsSyncing(true);
                         isSyncingRef.current = true;
                         setTimeout(() => {
                             isSyncingRef.current = false;
                             setIsSyncing(false);
-                        }, 1200);
+                        }, 1500);
                     }
                 });
 
@@ -656,9 +666,16 @@
 
             const pushToCloud = useCallback((data) => {
                 if (!gun || !roomId || isSyncingRef.current || !hasLoadedFromCloud) return;
-                setSaveStatus('saving');
                 
-                const roomKey = 'ts_' + roomId;
+                // 檢查連線數，如果為 0 則不顯示 saving 以免誤導
+                const activePeers = Object.values(gun.back('opt.peers') || {}).filter(p => p.wire && p.wire.readyState === 1);
+                if (activePeers.length === 0) {
+                    addLog('⚠️ 警告：目前無連線節點，資料僅存在本地');
+                    return;
+                }
+
+                setSaveStatus('saving');
+                const roomKey = 'ts_v3_' + roomId;
                 const payload = {
                     t: data.tripTitle,
                     i: JSON.stringify(minifyTripData(data.itinerary)),
@@ -668,11 +685,11 @@
 
                 gun.get(roomKey).put(payload, (ack) => {
                     if (ack.err) {
-                        addLog(`❌ 推播失敗: ${ack.err}`);
+                        addLog(`❌ 同步失敗: ${ack.err}`);
                         setSaveStatus('error');
                     } else {
                         setSaveStatus('saved');
-                        addLog('☁️ 已推播至雲端');
+                        addLog('☁️ 資料已成功送達雲端節點');
                     }
                 });
             }, [gun, roomId, hasLoadedFromCloud]);
