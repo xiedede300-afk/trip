@@ -435,8 +435,9 @@
             });
 
             const [isSyncing, setIsSyncing] = useState(false);
-            const isSyncingRef = useRef(false); // 核心：使用 Ref 避開閉包陷阱
+            const isSyncingRef = useRef(false);
             const [saveStatus, setSaveStatus] = useState('saved');
+            const [hasLoadedFromCloud, setHasLoadedFromCloud] = useState(false); // 門檻旗標
 
             // ── 從 URL 或 LocalStorage 讀取分享資料 ──
             const getSharedData = () => {
@@ -578,16 +579,28 @@
                 }
             }, [itinerary, backupLocations, tripTitle, roomId]);
 
-            // ── 協作模式：同步邏輯 (強化跨裝置版) ──
+            // ── 協作模式：同步邏輯 (修正新裝置覆蓋問題) ──
             useEffect(() => {
-                if (!gun || !roomId) return;
+                if (!gun || !roomId) {
+                    setHasLoadedFromCloud(true); // 非協作模式，直接開啟推播
+                    return;
+                }
+                
                 console.log('📡 正在訂閱共編房間:', roomId);
                 const room = gun.get('tripsync').get(roomId);
 
-                // 1. 初始抓取 (強制從網路拉取一次)
+                // 1. 安全抓取：設定超時，避免雲端沒資料時卡死
+                const loadTimeout = setTimeout(() => {
+                    if (!hasLoadedFromCloud) {
+                        console.log('⏱️ 雲端抓取超時，視為新房間或網路延遲');
+                        setHasLoadedFromCloud(true);
+                    }
+                }, 4000);
+
                 room.once((data) => {
+                    clearTimeout(loadTimeout);
                     if (data) {
-                        console.log('📥 初始資料抓取成功');
+                        console.log('📥 成功從雲端同步初始資料');
                         const current = stateRef.current;
                         if (data.tripTitle && data.tripTitle !== current.tripTitle) setTripTitle(data.tripTitle);
                         if (data.itinerary) {
@@ -596,7 +609,10 @@
                         if (data.backupLocations) {
                             try { setBackupLocations(expandTripData(JSON.parse(data.backupLocations))); } catch (e) {}
                         }
+                    } else {
+                        console.log('📭 雲端尚無資料，這是一個新房間');
                     }
+                    setHasLoadedFromCloud(true);
                 });
                 
                 // 2. 持續監聽
@@ -626,7 +642,7 @@
                     }
 
                     if (hasChange) {
-                        console.log('🔄 收到跨裝置同步更新');
+                        console.log('🔄 收到同步更新');
                         setIsSyncing(true);
                         isSyncingRef.current = true;
                         setTimeout(() => {
@@ -635,7 +651,10 @@
                         }, 1000);
                     }
                 });
-                return () => room.off();
+                return () => {
+                    clearTimeout(loadTimeout);
+                    room.off();
+                };
             }, [gun, roomId]);
 
             const pushToCloud = useCallback((data) => {
@@ -662,17 +681,18 @@
 
             const syncTimer = useRef(null);
             useEffect(() => {
-                if (isSyncingRef.current) return;
+                // 關鍵：如果尚未從雲端載入完成，絕對禁止推播，以免覆蓋雲端資料
+                if (!hasLoadedFromCloud || isSyncingRef.current) return;
                 
                 if (syncTimer.current) clearTimeout(syncTimer.current);
                 syncTimer.current = setTimeout(() => {
                     if (roomId) {
                         pushToCloud({ tripTitle, itinerary, backupLocations });
                     } else {
-                        setSaveStatus('saved'); // 非協作模式也顯示已存檔（存到 LocalStorage）
+                        setSaveStatus('saved');
                     }
-                }, 1000);
-            }, [tripTitle, itinerary, backupLocations, roomId, isSyncing, pushToCloud]);
+                }, 1500); // 稍微加長，給予載入更多緩衝
+            }, [tripTitle, itinerary, backupLocations, roomId, pushToCloud, hasLoadedFromCloud]);
 
             useEffect(() => {
                 const handleScroll = () => setIsScrolled(window.scrollY > 10);
@@ -1256,7 +1276,16 @@
             };
 
             return (
-                <div className="min-h-screen content-padding">
+                <div className={`min-h-screen pb-32 transition-opacity duration-500 ${!hasLoadedFromCloud && roomId ? 'opacity-30' : 'opacity-100'}`}>
+                    {/* Loading Overlay */}
+                    {!hasLoadedFromCloud && roomId && (
+                        <div className="fixed inset-0 z-[1000] flex flex-col items-center justify-center bg-white/50 backdrop-blur-md">
+                            <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                            <p className="text-sm font-black text-indigo-600 animate-pulse">正在從雲端抓取行程...</p>
+                            <p className="text-[10px] text-slate-400 mt-2">首次連線可能需要 2-3 秒</p>
+                        </div>
+                    )}
+                    
                     {/* Header */}
                     <header className={`sticky top-0 z-50 transition-all ${isScrolled ? 'glass-nav border-b border-slate-100 shadow-sm' : 'bg-white'}`}>
                         <div className="max-w-xl mx-auto px-4 sm:px-6 py-3 sm:py-4 flex justify-between items-center">
