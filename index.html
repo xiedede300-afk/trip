@@ -412,6 +412,7 @@
             });
 
             const [isSyncing, setIsSyncing] = useState(false);
+            const isSyncingRef = useRef(false); // 核心：使用 Ref 避開閉包陷阱
             const [saveStatus, setSaveStatus] = useState('saved');
 
             // ── 從 URL 或 LocalStorage 讀取分享資料 ──
@@ -538,15 +539,14 @@
             ]);
 
             const stateRef = useRef({ itinerary, backupLocations, tripTitle });
+
             useEffect(() => {
                 stateRef.current = { itinerary, backupLocations, tripTitle };
                 
-                // 區分房間存檔，避免不同連結互相覆蓋
                 const saveKey = roomId ? `tripsync_backup_${roomId}` : 'tripsync_backup_default';
                 const minified = minifyTripData({ itinerary, backupLocations, tripTitle });
                 localStorage.setItem(saveKey, JSON.stringify(minified));
 
-                // 記錄最近訪問過的房間列表 (歷史紀錄)
                 if (roomId) {
                     let history = JSON.parse(localStorage.getItem('tripsync_history') || '[]');
                     const entry = { id: roomId, title: tripTitle, time: Date.now() };
@@ -555,63 +555,82 @@
                 }
             }, [itinerary, backupLocations, tripTitle, roomId]);
 
-            // ── 協作模式：同步邏輯 ──
             useEffect(() => {
                 if (!gun || !roomId) return;
+                console.log('📡 已連線至共編房間:', roomId);
                 const room = gun.get('tripsync').get(roomId);
                 
                 room.on((data) => {
-                    if (!data || isSyncing) return;
+                    if (!data || isSyncingRef.current) return;
                     
                     const current = stateRef.current;
                     let hasChange = false;
 
-                    // 只有當雲端資料與本地真的不同時才更新，避免無限迴圈
                     if (data.tripTitle && data.tripTitle !== current.tripTitle) {
                         setTripTitle(data.tripTitle);
                         hasChange = true;
                     }
                     
-                    if (data.itinerary && data.itinerary !== JSON.stringify(minifyTripData(current.itinerary))) {
-                        try {
-                            setItinerary(expandTripData(JSON.parse(data.itinerary)));
-                            hasChange = true;
-                        } catch (e) {}
+                    if (data.itinerary) {
+                        const remoteItineraryStr = data.itinerary;
+                        const localItineraryStr = JSON.stringify(minifyTripData(current.itinerary));
+                        if (remoteItineraryStr !== localItineraryStr) {
+                            try {
+                                setItinerary(expandTripData(JSON.parse(remoteItineraryStr)));
+                                hasChange = true;
+                            } catch (e) { console.error('行程解析錯誤', e); }
+                        }
                     }
                     
-                    if (data.backupLocations && data.backupLocations !== JSON.stringify(minifyTripData(current.backupLocations))) {
-                        try {
-                            setBackupLocations(expandTripData(JSON.parse(data.backupLocations)));
-                            hasChange = true;
-                        } catch (e) {}
+                    if (data.backupLocations) {
+                        const remoteBackupStr = data.backupLocations;
+                        const localBackupStr = JSON.stringify(minifyTripData(current.backupLocations));
+                        if (remoteBackupStr !== localBackupStr) {
+                            try {
+                                setBackupLocations(expandTripData(JSON.parse(remoteBackupStr)));
+                                hasChange = true;
+                            } catch (e) { console.error('備用清單解析錯誤', e); }
+                        }
                     }
 
                     if (hasChange) {
+                        console.log('🔄 收到雲端更新，正在同步至本地...');
                         setIsSyncing(true);
-                        setTimeout(() => setIsSyncing(false), 800);
+                        isSyncingRef.current = true;
+                        setTimeout(() => {
+                            isSyncingRef.current = false;
+                            setIsSyncing(false);
+                        }, 1000);
                     }
                 });
                 return () => room.off();
             }, [gun, roomId]);
 
             const pushToCloud = useCallback((data) => {
-                if (!gun || !roomId) return;
+                if (!gun || !roomId || isSyncingRef.current) return;
                 setSaveStatus('saving');
-                gun.get('tripsync').get(roomId).put({
+                
+                const payload = {
                     tripTitle: data.tripTitle,
                     itinerary: JSON.stringify(minifyTripData(data.itinerary)),
                     backupLocations: JSON.stringify(minifyTripData(data.backupLocations)),
                     lastUpdate: Date.now()
-                }, (ack) => {
-                    if (ack.err) setSaveStatus('error');
-                    else setSaveStatus('saved');
+                };
+
+                gun.get('tripsync').get(roomId).put(payload, (ack) => {
+                    if (ack.err) {
+                        console.error('❌ 雲端儲存失敗:', ack.err);
+                        setSaveStatus('error');
+                    } else {
+                        setSaveStatus('saved');
+                        console.log('☁️ 已成功推播至雲端');
+                    }
                 });
             }, [gun, roomId]);
 
             const syncTimer = useRef(null);
             useEffect(() => {
-                // 如果是正在從雲端同步下來，則不要推播回去
-                if (isSyncing) return;
+                if (isSyncingRef.current) return;
                 
                 if (syncTimer.current) clearTimeout(syncTimer.current);
                 syncTimer.current = setTimeout(() => {
