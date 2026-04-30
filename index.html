@@ -165,6 +165,37 @@
             { id: 'other', label: '其他', icon: 'tag', bg: 'bg-slate-50', text: 'text-slate-500' },
         ];
 
+        // ── 資料瘦身工具 (為了縮短分享連結網址) ──
+        const KEY_MAP = {
+            tripTitle: 't', itinerary: 'i', backupLocations: 'b',
+            id: 'id', day: 'd', year: 'y', month: 'm', date: 'dt', week: 'w',
+            locations: 'lo', name: 'n', category: 'c', time: 'tm', cost: 'co',
+            mapUrl: 'mu', note: 'nt', transportDetail: 'td', transportTime: 'tt', transportType: 'tp'
+        };
+        const REV_MAP = Object.fromEntries(Object.entries(KEY_MAP).map(([k, v]) => [v, k]));
+
+        const minifyTripData = (data) => {
+            const transform = (obj) => {
+                if (Array.isArray(obj)) return obj.map(transform);
+                if (obj !== null && typeof obj === 'object') {
+                    return Object.fromEntries(Object.entries(obj).map(([k, v]) => [KEY_MAP[k] || k, transform(v)]));
+                }
+                return obj;
+            };
+            return transform(data);
+        };
+
+        const expandTripData = (data) => {
+            const transform = (obj) => {
+                if (Array.isArray(obj)) return obj.map(transform);
+                if (obj !== null && typeof obj === 'object') {
+                    return Object.fromEntries(Object.entries(obj).map(([k, v]) => [REV_MAP[k] || k, transform(v)]));
+                }
+                return obj;
+            };
+            return transform(data);
+        };
+
         const transportTypes = [
             { id: 'transit', label: '大眾運輸', icon: 'bus' },
             { id: 'walking', label: '步行', icon: 'footprints' },
@@ -364,10 +395,10 @@
             );
         };
 
+        const App = () => {
             // ── 共同編輯 (Gun.js) 初始化 ──
             const gun = useMemo(() => {
                 if (!window.Gun) return null;
-                // 使用公共的 Relay Peers
                 return Gun([
                     'https://gun-manhattan.herokuapp.com/gun',
                     'https://peer.wall.org/gun',
@@ -382,22 +413,27 @@
 
             const [isSyncing, setIsSyncing] = useState(false);
 
-            // ── 從 URL hash 讀取分享資料（非協作模式使用）──
+            // ── 從 URL hash 讀取分享資料 ──
             const getSharedData = () => {
-                if (roomId) return null; // 協作模式優先從 Gun 讀取
+                if (roomId) return null;
                 const hash = window.location.hash.substring(1);
                 if (hash && window.LZString) {
                     try {
                         const decompressed = window.LZString.decompressFromEncodedURIComponent(hash);
-                        if (decompressed) return JSON.parse(decompressed);
+                        if (decompressed) {
+                            const rawData = JSON.parse(decompressed);
+                            // 判斷是否為瘦身後的格式 (檢查是否有 'i' 鍵)
+                            return rawData.i ? expandTripData(rawData) : rawData;
+                        }
                     } catch (e) { console.error('解析分享網址失敗', e); }
                 }
                 return null;
             };
             const _sharedData = getSharedData();
 
+            // ── 狀態定義 ──
             const [activeTab, setActiveTab] = useState('itinerary');
-            const [itinerarySubTab, setItinerarySubTab] = useState('main'); // 'main' 或 'backup'
+            const [itinerarySubTab, setItinerarySubTab] = useState('main');
             const [tripTitle, setTripTitle] = useState(() => _sharedData?.tripTitle || '我的夏季旅遊');
             const [selectedDay, setSelectedDay] = useState(1);
             const [isScrolled, setIsScrolled] = useState(false);
@@ -405,132 +441,8 @@
             const [openDropdownId, setOpenDropdownId] = useState(null);
             const [openTransportId, setOpenTransportId] = useState(null);
             const [editingDayId, setEditingDayId] = useState(null);
-
-            const [editingTimeTarget, setEditingTimeTarget] = useState(null); // { id, isBackup }
-            const [editingTransportTarget, setEditingTransportTarget] = useState(null); // { id }
-
-            // ── 協作模式：從雲端監聽資料 ──
-            useEffect(() => {
-                if (!gun || !roomId) return;
-
-                const room = gun.get('tripsync').get(roomId);
-                
-                room.on((data) => {
-                    if (!data) return;
-                    setIsSyncing(true);
-                    
-                    if (data.tripTitle && data.tripTitle !== tripTitle) {
-                        setTripTitle(data.tripTitle);
-                    }
-                    
-                    if (data.itinerary) {
-                        try {
-                            const remoteItinerary = JSON.parse(data.itinerary);
-                            setItinerary(prev => {
-                                // 簡單判斷：如果資料結構不同才更新
-                                if (JSON.stringify(prev) !== data.itinerary) return remoteItinerary;
-                                return prev;
-                            });
-                        } catch (e) {}
-                    }
-                    
-                    if (data.backupLocations) {
-                        try {
-                            const remoteBackup = JSON.parse(data.backupLocations);
-                            setBackupLocations(prev => {
-                                if (JSON.stringify(prev) !== data.backupLocations) return remoteBackup;
-                                return prev;
-                            });
-                        } catch (e) {}
-                    }
-                    
-                    setTimeout(() => setIsSyncing(false), 500);
-                });
-
-                return () => room.off();
-            }, [gun, roomId]);
-
-            // ── 協作模式：同步本地資料到雲端 (Debounced) ──
-            const pushToCloud = useCallback((data) => {
-                if (!gun || !roomId) return;
-                const room = gun.get('tripsync').get(roomId);
-                room.put({
-                    tripTitle: data.tripTitle,
-                    itinerary: JSON.stringify(data.itinerary),
-                    backupLocations: JSON.stringify(data.backupLocations),
-                    lastUpdate: Date.now()
-                });
-            }, [gun, roomId]);
-
-            const syncTimer = useRef(null);
-            useEffect(() => {
-                if (!roomId) return;
-                
-                // 只有在非同步中（自己修改）才推送到雲端
-                if (!isSyncing) {
-                    if (syncTimer.current) clearTimeout(syncTimer.current);
-                    syncTimer.current = setTimeout(() => {
-                        pushToCloud({ tripTitle, itinerary, backupLocations });
-                    }, 1000);
-                }
-            }, [tripTitle, itinerary, backupLocations, roomId, isSyncing, pushToCloud]);
-
-            useEffect(() => {
-                const handleScroll = () => setIsScrolled(window.scrollY > 10);
-                window.addEventListener('scroll', handleScroll);
-                return () => window.removeEventListener('scroll', handleScroll);
-            }, []);
-
-            const handleShare = () => {
-                if (roomId) {
-                    // 協作模式：分享包含 Room ID 的永久連結
-                    const baseUrl = window.location.href.split('?')[0].split('#')[0];
-                    const url = `${baseUrl}?room=${roomId}`;
-                    if (navigator.clipboard && navigator.clipboard.writeText) {
-                        navigator.clipboard.writeText(url)
-                            .then(() => alert('✅ 共同編輯連結已複製！\n您可以將此連結傳給朋友，他們看到的將是您目前的最新內容，且修改會即時同步。'))
-                            .catch(() => { prompt('請手動複製以下連結：', url); });
-                    } else {
-                        prompt('請手動複製以下連結：', url);
-                    }
-                    return;
-                }
-
-                if (!window.LZString) {
-                    alert('分享功能載入中，請稍後再試。');
-                    return;
-                }
-                const data = { itinerary, backupLocations, tripTitle };
-                const compressed = window.LZString.compressToEncodedURIComponent(JSON.stringify(data));
-                const baseUrl = window.location.href.split('?')[0].split('#')[0];
-                const url = `${baseUrl}#${compressed}`;
-                window.history.replaceState(null, '', `#${compressed}`);
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(url)
-                        .then(() => alert('✅ 分享連結已複製！\n目前為「靜態分享」模式，若希望多人同時編輯，請點擊下方的「開啟共同編輯」。'))
-                        .catch(() => { prompt('請手動複製以下連結：', url); });
-                } else {
-                    prompt('請手動複製以下連結：', url);
-                }
-            };
-
-            const enableCollaboration = () => {
-                if (roomId) return;
-                const newRoomId = 'room_' + Math.random().toString(36).substring(2, 11);
-                setRoomId(newRoomId);
-                const baseUrl = window.location.href.split('?')[0].split('#')[0];
-                window.history.pushState(null, '', `?room=${newRoomId}`);
-                // 立即推播當前資料到雲端
-                if (gun) {
-                    gun.get('tripsync').get(newRoomId).put({
-                        tripTitle,
-                        itinerary: JSON.stringify(itinerary),
-                        backupLocations: JSON.stringify(backupLocations),
-                        lastUpdate: Date.now()
-                    });
-                }
-                alert('🚀 共同編輯模式已啟動！\n網址已更新，現在點擊「分享」按鈕即可獲得共同編輯連結。');
-            };
+            const [editingTimeTarget, setEditingTimeTarget] = useState(null);
+            const [editingTransportTarget, setEditingTransportTarget] = useState(null);
 
             const startDate = new Date();
             const getDayInfo = (dayNumber) => {
@@ -594,7 +506,6 @@
                 }
             ]);
 
-            // 備用行程列表
             const [backupLocations, setBackupLocations] = useState(() => _sharedData?.backupLocations || [
                 {
                     id: 'b1',
@@ -611,12 +522,125 @@
                 }
             ]);
 
+            // ── 協作模式：同步邏輯 ──
+            useEffect(() => {
+                if (!gun || !roomId) return;
+                const room = gun.get('tripsync').get(roomId);
+                room.on((data) => {
+                    if (!data) return;
+                    setIsSyncing(true);
+                    if (data.tripTitle && data.tripTitle !== tripTitle) setTripTitle(data.tripTitle);
+                    if (data.itinerary) {
+                        try {
+                            if (JSON.stringify(itinerary) !== data.itinerary) setItinerary(JSON.parse(data.itinerary));
+                        } catch (e) {}
+                    }
+                    if (data.backupLocations) {
+                        try {
+                            if (JSON.stringify(backupLocations) !== data.backupLocations) setBackupLocations(JSON.parse(data.backupLocations));
+                        } catch (e) {}
+                    }
+                    setTimeout(() => setIsSyncing(false), 500);
+                });
+                return () => room.off();
+            }, [gun, roomId]);
 
+            const pushToCloud = useCallback((data) => {
+                if (!gun || !roomId) return;
+                gun.get('tripsync').get(roomId).put({
+                    tripTitle: data.tripTitle,
+                    itinerary: JSON.stringify(data.itinerary),
+                    backupLocations: JSON.stringify(data.backupLocations),
+                    lastUpdate: Date.now()
+                });
+            }, [gun, roomId]);
+
+            const syncTimer = useRef(null);
+            useEffect(() => {
+                if (!roomId || isSyncing) return;
+                if (syncTimer.current) clearTimeout(syncTimer.current);
+                syncTimer.current = setTimeout(() => {
+                    pushToCloud({ tripTitle, itinerary, backupLocations });
+                }, 1000);
+            }, [tripTitle, itinerary, backupLocations, roomId, isSyncing, pushToCloud]);
+
+            useEffect(() => {
+                const handleScroll = () => setIsScrolled(window.scrollY > 10);
+                window.addEventListener('scroll', handleScroll);
+                return () => window.removeEventListener('scroll', handleScroll);
+            }, []);
+
+            const handleShare = () => {
+                const baseUrl = window.location.href.split('?')[0].split('#')[0];
+                
+                if (roomId) {
+                    const url = `${baseUrl}?room=${roomId}`;
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(url)
+                            .then(() => alert('✅ 共同編輯連結已複製！\n這是一個永久短連結，任何人點開都能即時看到您的最新修改。'))
+                            .catch(() => { prompt('請手動複製以下連結：', url); });
+                    } else {
+                        prompt('請手動複製以下連結：', url);
+                    }
+                    return;
+                }
+
+                if (!window.LZString) {
+                    alert('分享功能載入中，請稍後再試。');
+                    return;
+                }
+                
+                // 使用瘦身後的資料格式
+                const data = minifyTripData({ itinerary, backupLocations, tripTitle });
+                const compressed = window.LZString.compressToEncodedURIComponent(JSON.stringify(data));
+                const url = `${baseUrl}#${compressed}`;
+                
+                window.history.replaceState(null, '', `#${compressed}`);
+                
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(url)
+                        .then(() => alert('✅ 分享連結已複製！\n已為您優化連結長度。若行程非常多，建議點擊標題旁的「多人圖示」改用雲端短連結。'))
+                        .catch(() => { prompt('請手動複製以下連結：', url); });
+                } else {
+                    prompt('請手動複製以下連結：', url);
+                }
+            };
+
+            const enableCollaboration = () => {
+                if (roomId) return;
+                const newRoomId = 'room_' + Math.random().toString(36).substring(2, 11);
+                const baseUrl = window.location.href.split('?')[0].split('#')[0];
+                const url = `${baseUrl}?room=${newRoomId}`;
+                
+                setRoomId(newRoomId);
+                window.history.pushState(null, '', `?room=${newRoomId}`);
+                
+                if (gun) {
+                    gun.get('tripsync').get(newRoomId).put({
+                        tripTitle,
+                        itinerary: JSON.stringify(itinerary),
+                        backupLocations: JSON.stringify(backupLocations),
+                        lastUpdate: Date.now()
+                    });
+                }
+
+                // 自動複製連結
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(url)
+                        .then(() => alert('🚀 共同編輯模式已啟動！\n連線連結已自動複製到您的剪貼簿。傳給朋友即可開始即時協作！'))
+                        .catch(() => { 
+                            alert('🚀 共同編輯模式已啟動！');
+                            prompt('網址已更新，請複製以下連結分享：', url); 
+                        });
+                } else {
+                    alert('🚀 共同編輯模式已啟動！');
+                    prompt('網址已更新，請複製以下連結分享：', url);
+                }
+            };
 
             const addDay = () => {
                 const newDayNumber = itinerary.length + 1;
                 let nextYear, nextMonth, nextDate, nextWeek;
-
                 if (itinerary.length > 0) {
                     const lastDay = itinerary[itinerary.length - 1];
                     const monthNum = parseInt(lastDay.month);
@@ -636,7 +660,6 @@
                     const info = getDayInfo(1);
                     nextYear = info.year; nextMonth = info.month; nextDate = info.date; nextWeek = info.week;
                 }
-
                 setItinerary([...itinerary, {
                     id: 'd' + Date.now(),
                     day: newDayNumber,
@@ -723,7 +746,6 @@
                 setItinerary(prev => prev.map(d => d.day === selectedDay ? { ...d, locations: [...d.locations, newLoc] } : d));
             };
 
-            // 備用行程相關函數
             const updateBackupLocation = (id, field, value) => {
                 setBackupLocations(prev => prev.map(loc => loc.id === id ? { ...loc, [field]: value } : loc));
             };
@@ -754,7 +776,6 @@
                     if (d.day === selectedDay) {
                         return {
                             ...d,
-                            // 加入到主要行程時，預設給定一個時間並標記不是備用
                             locations: [...d.locations, { ...backupLoc, id: 'l' + Date.now(), time: '12:00', isBackup: false }]
                         };
                     }
@@ -762,7 +783,6 @@
                 }));
                 removeBackupLocation(backupLoc.id);
             };
-
 
 
             const DateEditModal = () => {
