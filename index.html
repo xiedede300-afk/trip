@@ -717,15 +717,15 @@
 
                 return (
                     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in">
-                        <div className="bg-white w-full max-w-xs rounded-3xl p-6 shadow-2xl flex flex-col gap-4">
+                        <div className="bg-white w-[calc(100%-2rem)] max-w-xs rounded-[2rem] p-5 sm:p-6 shadow-2xl flex flex-col gap-4 overflow-hidden animate-in">
                             <h3 className="text-lg font-black text-slate-800 text-center mb-1">編輯日期</h3>
 
                             <div>
                                 <label className="text-[11px] font-bold text-slate-500 mb-1.5 block">快速選擇</label>
                                 <input
                                     type="date"
-                                    className="w-full min-w-0 bg-indigo-50 border border-indigo-100 text-indigo-700 rounded-xl px-4 py-3 text-sm font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all box-border"
-
+                                    value={tempYear && tempMonth && tempDate ? `${tempYear}-${String(tempMonth).padStart(2, '0')}-${String(tempDate).padStart(2, '0')}` : ''}
+                                    className="w-full max-w-full min-w-0 bg-indigo-50 border border-indigo-100 text-indigo-700 rounded-xl px-3 py-3 text-sm font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all box-border block"
                                     onChange={(e) => {
                                         if (e.target.value) {
                                             const d = new Date(e.target.value);
@@ -735,6 +735,7 @@
                                         }
                                     }}
                                 />
+
                             </div>
 
                             <div className="flex items-center my-1">
