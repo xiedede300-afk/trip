@@ -397,27 +397,23 @@
 
         const App = () => {
             // ── 共同編輯 (Gun.js) 初始化 ──
+            const [syncLogs, setSyncLogs] = useState(['系統初始化...']);
+            const addLog = (msg) => setSyncLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 10));
+
             const gun = useMemo(() => {
                 if (!window.Gun) return null;
-                const peers = [
-                    'https://gun-manhattan.herokuapp.com/gun',
-                    'https://gunjs.herokuapp.com/gun',
-                    'https://relay.gun.eco/gun'
-                ];
+                const peer = 'https://gun-manhattan.herokuapp.com/gun';
                 const g = Gun({
-                    peers: peers,
-                    localStorage: true, // 手機端建議開啟，有助於維持連線穩定
-                    retry: 1500
+                    peers: [peer],
+                    localStorage: true,
+                    retry: 1000
                 });
 
-                // 監聽手機端切換分頁回來的「喚醒」事件
-                const handleVisibilityChange = () => {
-                    if (document.visibilityState === 'visible') {
-                        console.log('⏰ 偵測到網頁喚醒，正在嘗試重連雲端...');
-                        g.opt({ peers: peers }); // 強制重新連線
-                    }
-                };
-                window.addEventListener('visibilitychange', handleVisibilityChange);
+                // 心跳機制：防止連線被電信商切斷
+                setInterval(() => {
+                    if (g) g.get('heartbeat').put(Date.now());
+                }, 10000);
+
                 return g;
             }, []);
 
@@ -432,11 +428,14 @@
                     Object.keys(peers).forEach(url => {
                         if (peers[url].wire && peers[url].wire.readyState === 1) count++;
                     });
-                    setPeerCount(count);
+                    if (count !== peerCount) {
+                        setPeerCount(count);
+                        addLog(`雲端節點數量: ${count}`);
+                    }
                 };
                 const timer = setInterval(updatePeers, 3000);
                 return () => clearInterval(timer);
-            }, [gun]);
+            }, [gun, peerCount]);
 
             const [roomId, setRoomId] = useState(() => {
                 const params = new URLSearchParams(window.location.search);
@@ -588,75 +587,67 @@
                 }
             }, [itinerary, backupLocations, tripTitle, roomId]);
 
-            // ── 協作模式：同步邏輯 (扁平路徑強化版) ──
+            // ── 協作模式：同步邏輯 (原子化路徑強化版) ──
             useEffect(() => {
                 if (!gun || !roomId) {
                     setHasLoadedFromCloud(true);
                     return;
                 }
                 
-                const roomKey = 'ts_' + roomId; // 扁平化路徑
-                console.log('📡 正在訂閱共編頻道:', roomKey);
+                const roomKey = 'ts_' + roomId;
+                addLog(`訂閱頻道: ${roomKey}`);
                 const room = gun.get(roomKey);
 
                 const loadTimeout = setTimeout(() => {
                     if (!hasLoadedFromCloud) {
-                        console.log('⏱️ 雲端抓取超時');
+                        addLog('雲端載入超時');
                         setHasLoadedFromCloud(true);
                     }
-                }, 5000);
+                }, 6000);
 
-                room.once((data) => {
-                    clearTimeout(loadTimeout);
-                    if (data) {
-                        console.log('📥 初始資料抓取成功');
-                        const current = stateRef.current;
-                        if (data.tripTitle && data.tripTitle !== current.tripTitle) setTripTitle(data.tripTitle);
-                        if (data.itinerary) {
-                            try { setItinerary(expandTripData(JSON.parse(data.itinerary))); } catch (e) {}
-                        }
-                        if (data.backupLocations) {
-                            try { setBackupLocations(expandTripData(JSON.parse(data.backupLocations))); } catch (e) {}
-                        }
-                    }
-                    setHasLoadedFromCloud(true);
-                });
-                
+                // 監聽原子化節點，提高小封包成功率
                 room.on((data) => {
                     if (!data || isSyncingRef.current) return;
                     
                     const current = stateRef.current;
                     let hasChange = false;
 
-                    if (data.tripTitle && data.tripTitle !== current.tripTitle) {
-                        setTripTitle(data.tripTitle);
+                    // 1. 標題
+                    if (data.t && data.t !== current.tripTitle) {
+                        setTripTitle(data.t);
                         hasChange = true;
+                        addLog('📥 收到標題更新');
                     }
                     
-                    if (data.itinerary && data.itinerary !== JSON.stringify(minifyTripData(current.itinerary))) {
+                    // 2. 行程 (JSON)
+                    if (data.i && data.i !== JSON.stringify(minifyTripData(current.itinerary))) {
                         try {
-                            setItinerary(expandTripData(JSON.parse(data.itinerary)));
+                            setItinerary(expandTripData(JSON.parse(data.i)));
                             hasChange = true;
+                            addLog('📥 收到行程更新');
                         } catch (e) {}
                     }
                     
-                    if (data.backupLocations && data.backupLocations !== JSON.stringify(minifyTripData(current.backupLocations))) {
+                    // 3. 備用 (JSON)
+                    if (data.b && data.b !== JSON.stringify(minifyTripData(current.backupLocations))) {
                         try {
-                            setBackupLocations(expandTripData(JSON.parse(data.backupLocations)));
+                            setBackupLocations(expandTripData(JSON.parse(data.b)));
                             hasChange = true;
+                            addLog('📥 收到備用清單更新');
                         } catch (e) {}
                     }
 
                     if (hasChange) {
-                        console.log('🔄 收到即時同步');
+                        setHasLoadedFromCloud(true);
                         setIsSyncing(true);
                         isSyncingRef.current = true;
                         setTimeout(() => {
                             isSyncingRef.current = false;
                             setIsSyncing(false);
-                        }, 1000);
+                        }, 1200);
                     }
                 });
+
                 return () => {
                     clearTimeout(loadTimeout);
                     room.off();
@@ -664,27 +655,27 @@
             }, [gun, roomId]);
 
             const pushToCloud = useCallback((data) => {
-                if (!gun || !roomId || isSyncingRef.current) return;
+                if (!gun || !roomId || isSyncingRef.current || !hasLoadedFromCloud) return;
                 setSaveStatus('saving');
                 
                 const roomKey = 'ts_' + roomId;
                 const payload = {
-                    tripTitle: data.tripTitle,
-                    itinerary: JSON.stringify(minifyTripData(data.itinerary)),
-                    backupLocations: JSON.stringify(minifyTripData(data.backupLocations)),
-                    lastUpdate: Date.now()
+                    t: data.tripTitle,
+                    i: JSON.stringify(minifyTripData(data.itinerary)),
+                    b: JSON.stringify(minifyTripData(data.backupLocations)),
+                    l: Date.now()
                 };
 
                 gun.get(roomKey).put(payload, (ack) => {
                     if (ack.err) {
-                        console.error('❌ 同步失敗:', ack.err);
+                        addLog(`❌ 推播失敗: ${ack.err}`);
                         setSaveStatus('error');
                     } else {
                         setSaveStatus('saved');
-                        console.log('☁️ 已推播至頻道:', roomKey);
+                        addLog('☁️ 已推播至雲端');
                     }
                 });
-            }, [gun, roomId]);
+            }, [gun, roomId, hasLoadedFromCloud]);
 
             const syncTimer = useRef(null);
             useEffect(() => {
@@ -765,12 +756,12 @@
                 window.history.pushState(null, '', `?room=${newRoomId}`);
                 
                 if (gun) {
-                    // 使用新的扁平化路徑 ts_
+                    // 使用原子化節點
                     gun.get('ts_' + newRoomId).put({
-                        tripTitle,
-                        itinerary: JSON.stringify(minifyTripData(itinerary)),
-                        backupLocations: JSON.stringify(minifyTripData(backupLocations)),
-                        lastUpdate: Date.now()
+                        t: tripTitle,
+                        i: JSON.stringify(minifyTripData(itinerary)),
+                        b: JSON.stringify(minifyTripData(backupLocations)),
+                        l: Date.now()
                     });
                 }
 
@@ -1310,15 +1301,11 @@
                                 {roomId ? (
                                     <button 
                                         onClick={() => {
-                                            if (gun) gun.opt({ peers: [
-                                                'https://gun-manhattan.herokuapp.com/gun',
-                                                'https://gunjs.herokuapp.com/gun',
-                                                'https://relay.gun.eco/gun'
-                                            ]});
-                                            alert('🔄 正在嘗試重新建立連線...');
+                                            alert(`📋 同步診斷日誌：\n\n${syncLogs.join('\n')}\n\n[提示] 請確認已連線數量 > 0`);
+                                            if (gun) gun.opt({ peers: ['https://gun-manhattan.herokuapp.com/gun'] });
                                         }}
                                         className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[9px] font-black uppercase tracking-wider transition-all active:scale-95 ${peerCount > 0 ? (saveStatus === 'saving' ? 'bg-indigo-100 text-indigo-600' : 'bg-emerald-50 text-emerald-600') : 'bg-rose-50 text-rose-600'}`}
-                                        title="點擊重連"
+                                        title="查看日誌"
                                     >
                                         <div className={`w-1.5 h-1.5 rounded-full ${peerCount > 0 ? (saveStatus === 'saving' ? 'bg-indigo-600 animate-pulse' : 'bg-emerald-500') : 'bg-rose-500 animate-bounce'}`}></div>
                                         <span className="hidden sm:inline">
