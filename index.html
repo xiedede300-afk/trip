@@ -410,23 +410,18 @@
                 const g = Gun({
                     peers: peers,
                     localStorage: true,
-                    retry: 1000
+                    retry: 1000,
+                    axe: false // 關閉 AXE 有助於不穩定網路的連線穩定
                 });
 
-                // 監聽節點連線事件
                 g.on('hi', (peer) => addLog(`✅ 連上節點: ${peer.url || '未知'}`));
                 g.on('bye', (peer) => addLog(`❌ 斷開節點: ${peer.url || '未知'}`));
 
-                // 心跳與強制喚醒
                 setInterval(() => {
                     if (g) {
                         g.get('heartbeat').put(Date.now());
-                        // 如果一個人都沒連上，嘗試重新握手
                         const activePeers = Object.values(g.back('opt.peers') || {}).filter(p => p.wire && p.wire.readyState === 1);
-                        if (activePeers.length === 0) {
-                            addLog('📡 嘗試重新喚醒雲端連線...');
-                            g.opt({ peers: peers });
-                        }
+                        if (activePeers.length === 0) g.opt({ peers: peers });
                     }
                 }, 10000);
 
@@ -460,8 +455,16 @@
 
             const [isSyncing, setIsSyncing] = useState(false);
             const isSyncingRef = useRef(false);
+            const isUserModifiedRef = useRef(false); // 關鍵：只有人為修改才推播
             const [saveStatus, setSaveStatus] = useState('saved');
-            const [hasLoadedFromCloud, setHasLoadedFromCloud] = useState(false); // 門檻旗標
+            const [hasLoadedFromCloud, setHasLoadedFromCloud] = useState(false);
+            
+            const markAsModified = () => {
+                if (!isUserModifiedRef.current) {
+                    isUserModifiedRef.current = true;
+                    addLog('✍️ 偵測到人為修改，開啟同步');
+                }
+            };
 
             // ── 從 URL 或 LocalStorage 讀取分享資料 ──
             const getSharedData = () => {
@@ -603,23 +606,41 @@
                 }
             }, [itinerary, backupLocations, tripTitle, roomId]);
 
-            // ── 協作模式：同步邏輯 (穩定性增強版) ──
+            // ── 協作模式：同步邏輯 (防覆蓋強化版) ──
+            const forceFetch = useCallback(() => {
+                if (!gun || !roomId) return;
+                const roomKey = 'ts_v3_' + roomId;
+                addLog('🔍 執行強制手動抓取...');
+                gun.get(roomKey).once((data) => {
+                    if (data) {
+                        addLog('📥 手動抓取成功');
+                        const current = stateRef.current;
+                        if (data.t && data.t !== current.tripTitle) setTripTitle(data.t);
+                        if (data.i) try { setItinerary(expandTripData(JSON.parse(data.i))); } catch (e) {}
+                        if (data.b) try { setBackupLocations(expandTripData(JSON.parse(data.b))); } catch (e) {}
+                        setHasLoadedFromCloud(true);
+                    } else {
+                        addLog('📭 手動抓取：雲端無資料');
+                    }
+                });
+            }, [gun, roomId]);
+
             useEffect(() => {
                 if (!gun || !roomId) {
                     setHasLoadedFromCloud(true);
                     return;
                 }
                 
-                const roomKey = 'ts_v3_' + roomId; // 使用新版前綴避免舊資料干擾
+                const roomKey = 'ts_v3_' + roomId;
                 addLog(`🔑 進入房間: ${roomKey}`);
                 const room = gun.get(roomKey);
 
                 const loadTimeout = setTimeout(() => {
                     if (!hasLoadedFromCloud) {
-                        addLog('⚠️ 雲端讀取超時 (10s)，開啟編輯權限');
+                        addLog('⚠️ 讀取超時 (15s)，進入編輯模式');
                         setHasLoadedFromCloud(true);
                     }
-                }, 10000);
+                }, 15000);
 
                 room.on((data) => {
                     if (!data || isSyncingRef.current) return;
@@ -627,7 +648,6 @@
                     const current = stateRef.current;
                     let hasChange = false;
                     
-                    // 資料比對
                     if (data.t && data.t !== current.tripTitle) {
                         setTripTitle(data.t);
                         hasChange = true;
@@ -646,7 +666,7 @@
                     }
 
                     if (hasChange) {
-                        addLog('🔄 成功同步雲端最新變更');
+                        addLog('🔄 收到同步更新');
                         clearTimeout(loadTimeout);
                         setHasLoadedFromCloud(true);
                         setIsSyncing(true);
@@ -665,12 +685,12 @@
             }, [gun, roomId]);
 
             const pushToCloud = useCallback((data) => {
-                if (!gun || !roomId || isSyncingRef.current || !hasLoadedFromCloud) return;
+                // 核心防線：除非人為修改，否則絕對不推播預設資料
+                if (!gun || !roomId || isSyncingRef.current || !hasLoadedFromCloud || !isUserModifiedRef.current) return;
                 
-                // 檢查連線數，如果為 0 則不顯示 saving 以免誤導
                 const activePeers = Object.values(gun.back('opt.peers') || {}).filter(p => p.wire && p.wire.readyState === 1);
                 if (activePeers.length === 0) {
-                    addLog('⚠️ 警告：目前無連線節點，資料僅存在本地');
+                    addLog('⚠️ 無連線，待連線後自動補傳');
                     return;
                 }
 
@@ -685,11 +705,11 @@
 
                 gun.get(roomKey).put(payload, (ack) => {
                     if (ack.err) {
-                        addLog(`❌ 同步失敗: ${ack.err}`);
+                        addLog(`❌ 推播失敗: ${ack.err}`);
                         setSaveStatus('error');
                     } else {
                         setSaveStatus('saved');
-                        addLog('☁️ 資料已成功送達雲端節點');
+                        addLog('☁️ 已安全送達雲端');
                     }
                 });
             }, [gun, roomId, hasLoadedFromCloud]);
@@ -790,6 +810,7 @@
             };
 
             const addDay = () => {
+                markAsModified();
                 const newDayNumber = itinerary.length + 1;
                 let nextYear, nextMonth, nextDate, nextWeek;
                 if (itinerary.length > 0) {
@@ -862,6 +883,7 @@
             };
 
             const updateLocation = (id, field, value) => {
+                markAsModified();
                 setItinerary(prev => {
                     const newItinerary = [...prev];
                     const dayIndex = newItinerary.findIndex(d => d.day === selectedDay);
@@ -1318,11 +1340,12 @@
                                 {roomId ? (
                                     <button 
                                         onClick={() => {
-                                            alert(`📋 同步診斷日誌：\n\n${syncLogs.join('\n')}\n\n[提示] 請確認已連線數量 > 0`);
-                                            if (gun) gun.opt({ peers: ['https://gun-manhattan.herokuapp.com/gun'] });
+                                            const choice = confirm(`📋 同步診斷日誌：\n\n${syncLogs.join('\n')}\n\n[提示] 目前連線節點: ${peerCount}\n\n您是否要執行「強制手動抓取雲端資料」？`);
+                                            if (choice) forceFetch();
+                                            if (gun) gun.opt({ peers: ['https://gun-manhattan.herokuapp.com/gun', 'https://relay.peer.ooo/gun', 'https://gun.p2p.army/gun'] });
                                         }}
                                         className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[9px] font-black uppercase tracking-wider transition-all active:scale-95 ${peerCount > 0 ? (saveStatus === 'saving' ? 'bg-indigo-100 text-indigo-600' : 'bg-emerald-50 text-emerald-600') : 'bg-rose-50 text-rose-600'}`}
-                                        title="查看日誌"
+                                        title="查看日誌/強制抓取"
                                     >
                                         <div className={`w-1.5 h-1.5 rounded-full ${peerCount > 0 ? (saveStatus === 'saving' ? 'bg-indigo-600 animate-pulse' : 'bg-emerald-500') : 'bg-rose-500 animate-bounce'}`}></div>
                                         <span className="hidden sm:inline">
