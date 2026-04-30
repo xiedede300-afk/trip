@@ -399,16 +399,15 @@
             // ── 共同編輯 (Gun.js) 初始化 ──
             const gun = useMemo(() => {
                 if (!window.Gun) return null;
-                // 使用更多、更穩定的公用節點
+                // 精選穩定、支援 HTTPS 且互聯性強的節點
                 return Gun({
                     peers: [
                         'https://gun-manhattan.herokuapp.com/gun',
-                        'https://peer.wall.org/gun',
-                        'https://gundb-relay.herokuapp.com/gun',
-                        'https://gun-us.herokuapp.com/gun',
-                        'https://gun-eu.herokuapp.com/gun'
+                        'https://gunjs.herokuapp.com/gun',
+                        'https://relay.gun.eco/gun'
                     ],
-                    localStorage: false // 跨裝置同步建議關閉內部 localStorage 以免干擾
+                    localStorage: false,
+                    retry: 3000
                 });
             }, []);
 
@@ -579,28 +578,28 @@
                 }
             }, [itinerary, backupLocations, tripTitle, roomId]);
 
-            // ── 協作模式：同步邏輯 (修正新裝置覆蓋問題) ──
+            // ── 協作模式：同步邏輯 (扁平路徑強化版) ──
             useEffect(() => {
                 if (!gun || !roomId) {
-                    setHasLoadedFromCloud(true); // 非協作模式，直接開啟推播
+                    setHasLoadedFromCloud(true);
                     return;
                 }
                 
-                console.log('📡 正在訂閱共編房間:', roomId);
-                const room = gun.get('tripsync').get(roomId);
+                const roomKey = 'ts_' + roomId; // 扁平化路徑
+                console.log('📡 正在訂閱共編頻道:', roomKey);
+                const room = gun.get(roomKey);
 
-                // 1. 安全抓取：設定超時，避免雲端沒資料時卡死
                 const loadTimeout = setTimeout(() => {
                     if (!hasLoadedFromCloud) {
-                        console.log('⏱️ 雲端抓取超時，視為新房間或網路延遲');
+                        console.log('⏱️ 雲端抓取超時');
                         setHasLoadedFromCloud(true);
                     }
-                }, 4000);
+                }, 5000);
 
                 room.once((data) => {
                     clearTimeout(loadTimeout);
                     if (data) {
-                        console.log('📥 成功從雲端同步初始資料');
+                        console.log('📥 初始資料抓取成功');
                         const current = stateRef.current;
                         if (data.tripTitle && data.tripTitle !== current.tripTitle) setTripTitle(data.tripTitle);
                         if (data.itinerary) {
@@ -609,13 +608,10 @@
                         if (data.backupLocations) {
                             try { setBackupLocations(expandTripData(JSON.parse(data.backupLocations))); } catch (e) {}
                         }
-                    } else {
-                        console.log('📭 雲端尚無資料，這是一個新房間');
                     }
                     setHasLoadedFromCloud(true);
                 });
                 
-                // 2. 持續監聽
                 room.on((data) => {
                     if (!data || isSyncingRef.current) return;
                     
@@ -642,7 +638,7 @@
                     }
 
                     if (hasChange) {
-                        console.log('🔄 收到同步更新');
+                        console.log('🔄 收到即時同步');
                         setIsSyncing(true);
                         isSyncingRef.current = true;
                         setTimeout(() => {
@@ -661,6 +657,7 @@
                 if (!gun || !roomId || isSyncingRef.current) return;
                 setSaveStatus('saving');
                 
+                const roomKey = 'ts_' + roomId;
                 const payload = {
                     tripTitle: data.tripTitle,
                     itinerary: JSON.stringify(minifyTripData(data.itinerary)),
@@ -668,13 +665,13 @@
                     lastUpdate: Date.now()
                 };
 
-                gun.get('tripsync').get(roomId).put(payload, (ack) => {
+                gun.get(roomKey).put(payload, (ack) => {
                     if (ack.err) {
-                        console.error('❌ 雲端儲存失敗:', ack.err);
+                        console.error('❌ 同步失敗:', ack.err);
                         setSaveStatus('error');
                     } else {
                         setSaveStatus('saved');
-                        console.log('☁️ 已成功推播至雲端');
+                        console.log('☁️ 已推播至頻道:', roomKey);
                     }
                 });
             }, [gun, roomId]);
@@ -740,12 +737,11 @@
                 const baseUrl = window.location.href.split('?')[0].split('#')[0];
                 
                 if (roomId) {
-                    // 已在房間內，則執行「再次複製」與「建立新行程」詢問
                     const url = `${baseUrl}?room=${roomId}`;
                     if (navigator.clipboard && navigator.clipboard.writeText) {
                         navigator.clipboard.writeText(url).then(() => {
                             if (confirm('✅ 目前行程連結已再次複製！\n\n您是否想要「建立一個全新的獨立行程」？\n(這會產生一個新的共編連結，與目前的行程完全分開)')) {
-                                window.location.href = baseUrl; // 回到首頁建立新行程
+                                window.location.href = baseUrl;
                             }
                         });
                     }
@@ -759,7 +755,8 @@
                 window.history.pushState(null, '', `?room=${newRoomId}`);
                 
                 if (gun) {
-                    gun.get('tripsync').get(newRoomId).put({
+                    // 使用新的扁平化路徑 ts_
+                    gun.get('ts_' + newRoomId).put({
                         tripTitle,
                         itinerary: JSON.stringify(minifyTripData(itinerary)),
                         backupLocations: JSON.stringify(minifyTripData(backupLocations)),
@@ -1301,12 +1298,12 @@
                             <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
                                 {/* 狀態指示燈 (協作或本地) */}
                                 {roomId ? (
-                                    <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[9px] font-black uppercase tracking-wider transition-all ${saveStatus === 'saving' ? 'bg-indigo-100 text-indigo-600' : 'bg-emerald-50 text-emerald-600'}`}>
-                                        <div className={`w-1.5 h-1.5 rounded-full ${saveStatus === 'saving' ? 'bg-indigo-600 animate-pulse' : 'bg-emerald-500'}`}></div>
+                                    <div className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[9px] font-black uppercase tracking-wider transition-all ${peerCount > 0 ? (saveStatus === 'saving' ? 'bg-indigo-100 text-indigo-600' : 'bg-emerald-50 text-emerald-600') : 'bg-rose-50 text-rose-600'}`}>
+                                        <div className={`w-1.5 h-1.5 rounded-full ${peerCount > 0 ? (saveStatus === 'saving' ? 'bg-indigo-600 animate-pulse' : 'bg-emerald-500') : 'bg-rose-500 animate-bounce'}`}></div>
                                         <span className="hidden sm:inline">
-                                            {saveStatus === 'saving' ? '同步中' : `已連線 (${peerCount})`}
+                                            {peerCount > 0 ? (saveStatus === 'saving' ? '同步中' : `雲端連線 (${peerCount})`) : '連線中斷'}
                                         </span>
-                                        <Icon name="cloud" className="w-3 h-3" />
+                                        <Icon name={peerCount > 0 ? "cloud" : "cloud-off"} className="w-3 h-3" />
                                     </div>
                                 ) : (
                                     <div className="flex items-center gap-1 px-2 py-1.5 rounded-full bg-slate-50 text-slate-400 text-[9px] font-black uppercase tracking-wider">
